@@ -1,4 +1,5 @@
-# toddlearnsai
+# Todd Learns AI Channel 
+https://www.youtube.com/@ToddLearnsAI
 Welcome to a fun and friendly place where kids explore coding, AI, and STEM—alongside Todd the turtle every step of the way!
 
 Todd is curious, sometimes confused, but always ready to try something new. Together, you’ll learn how to code, build cool projects, understand how things work, and discover how AI comes to life in a simple and engaging way.
