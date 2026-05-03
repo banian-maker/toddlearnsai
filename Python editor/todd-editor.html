@@ -1,0 +1,1095 @@
+<!doctype html>
+<!--
+  Self-hosted "Todd's Editor" — three modes:
+
+  ANIMATION mode (default, used for video production):
+    ?step=1|2|3|4         which scripted step's full source to render
+    ?preTyped=N           number of LINES (1-based) of the source to show as
+                          already-typed before the cursor begins animating.
+                          Use this to "append" a step to a previously taught
+                          state instead of retyping everything.
+    ?typeSpeed=80         ms per keystroke (use 110+ for slower, kid-pace typing)
+    ?runDelay=500         ms to wait between finishing typing and pressing RUN
+    ?postRunHold=1500     ms to hold final frame
+    ?startCanvas=1|2|3    pre-draw an existing turtle path before the animation
+                          starts (e.g. startCanvas=3 = corner already on screen).
+
+  PLAY mode (interactive playground for kids):
+    ?mode=play[&step=1..4]
+
+  Extra animation params for finer per-scene control:
+    ?noRun=1              type only — never press RUN. Used to show the editor
+                          mid-typing while the teacher is still talking.
+    ?hideTurtle=1         do not draw the turtle (or any seeded path) until
+                          RUN is actually pressed. Lets the canvas stay empty
+                          while the editor fills up.
+
+  PLAY mode runs REAL Python via Pyodide (CPython compiled to WebAssembly), so
+  any Python code works — not just the turtle/print subset used in chapter 1.
+  Animation mode keeps using a small built-in parser so the video render does
+  not depend on a network download.
+
+  Layout: code editor on the LEFT (full height). Canvas TOP-RIGHT, terminal
+  panel BOTTOM-RIGHT (text-only chapters can use the terminal alone).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Todd Editor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bungee&family=Fredoka:wght@500;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --shell:#7cb342; --accent:#ffd54f; --pink:#d81b60;
+    --ink:#1d1d1f; --paper:#fff8e7; --code-bg:#1e1e2e; --term-bg:#11111b;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#fdf6e3;font-family:'Fredoka',sans-serif;color:var(--ink)}
+  body{display:flex;align-items:center;justify-content:center;height:100vh;width:100vw;overflow:hidden}
+  .stage{display:grid;grid-template-columns:1fr 1fr;gap:40px;width:1800px;height:920px;padding:30px}
+  /* LEFT column: editor only (full height). */
+  .leftCol{display:flex;flex-direction:column;gap:16px;min-height:0}
+  /* RIGHT column: canvas (top) + draggable splitter + terminal (bottom).
+     The canvas card and terminal use flex-basis driven by --canvas-h /
+     --term-h CSS vars set by the splitter drag handler. */
+  .rightCol{display:flex;flex-direction:column;gap:0;min-height:0}
+  .rightCol > .canvasCard{flex:0 0 var(--canvas-h, 60%);min-height:0}
+  .rightCol > .terminal{flex:0 0 var(--term-h, calc(40% - 14px));min-height:0;height:auto;margin-top:14px}
+  body:not(.play) .rightCol > .canvasCard{flex:1 1 auto}
+  .splitter{
+    height:14px;cursor:row-resize;display:flex;align-items:center;justify-content:center;
+    background:transparent;flex:0 0 auto;user-select:none;touch-action:none
+  }
+  body:not(.play) .splitter{display:none}
+  .splitter::before{
+    content:'';display:block;width:80px;height:6px;border-radius:3px;
+    background:var(--ink);opacity:.45;transition:opacity .15s
+  }
+  .splitter:hover::before, .splitter.dragging::before{opacity:.85}
+  /* Expand/restore button on each pane title bar — one click to maximise that
+     pane within the right column, click again to restore the previous split. */
+  .expandbtn{
+    margin-left:auto;background:rgba(255,255,255,.12);color:#fff;
+    border:2px solid rgba(255,255,255,.35);border-radius:8px;
+    font-family:'Bungee',sans-serif;font-size:14px;letter-spacing:.5px;
+    padding:4px 10px;cursor:pointer;line-height:1
+  }
+  .expandbtn:hover{background:rgba(255,255,255,.22)}
+  body:not(.play) .expandbtn{display:none}
+  /* When a pane is maximised, fully hide the other pane and the splitter. */
+  .rightCol.canvas-max > .terminal,
+  .rightCol.canvas-max > .splitter{display:none}
+  .rightCol.term-max > .canvasCard,
+  .rightCol.term-max > .splitter{display:none}
+  .rightCol.canvas-max > .canvasCard,
+  .rightCol.term-max > .terminal{flex:1 1 auto !important}
+  .editor{
+    background:var(--code-bg);border-radius:24px;border:6px solid var(--ink);
+    box-shadow:0 12px 0 var(--ink), 0 24px 64px rgba(0,0,0,.35);
+    display:flex;flex-direction:column;overflow:hidden;flex:1;min-height:0
+  }
+  .terminal{
+    background:var(--term-bg);border-radius:18px;border:5px solid var(--ink);
+    box-shadow:0 8px 0 var(--ink);
+    display:flex;flex-direction:column;overflow:hidden;height:260px;flex-shrink:0
+  }
+  .termBar{
+    background:#181825;color:#a6adc8;padding:10px 18px;border-bottom:3px solid var(--ink);
+    font-family:'Bungee',sans-serif;font-size:16px;letter-spacing:.5px;
+    display:flex;align-items:center;gap:10px
+  }
+  .termBar .lbl{color:#cdd6f4}
+  .termBody{
+    flex:1;padding:14px 20px;color:#cdd6f4;font-family:'JetBrains Mono',monospace;
+    font-size:22px;line-height:1.4;white-space:pre-wrap;overflow:auto
+  }
+  .termBody .prompt{color:#a6e3a1}
+  .termBody .muted{color:#6c7086;font-style:italic}
+  .termBody .err{color:#f38ba8}
+  .titlebar{
+    display:flex;align-items:center;gap:14px;
+    background:#11111b;color:#fff;padding:14px 22px;border-bottom:4px solid var(--ink);
+    font-family:'Bungee',sans-serif;font-size:22px;letter-spacing:.5px
+  }
+  .dot{width:14px;height:14px;border-radius:50%}
+  .dot.r{background:#ff5f56}.dot.y{background:#ffbd2e}.dot.g{background:#27c93f}
+  .file{margin-left:14px;color:#a6adc8;font-family:'JetBrains Mono',monospace;font-size:18px}
+  .runbtn{
+    margin-left:auto;display:flex;align-items:center;gap:10px;
+    background:var(--accent);color:var(--ink);font-family:'Bungee',sans-serif;
+    padding:8px 18px;border-radius:14px;border:3px solid var(--ink);font-size:18px;
+    box-shadow:0 4px 0 var(--ink); transition:transform .12s, box-shadow .12s
+  }
+  .runbtn.pressed{transform:translateY(4px);box-shadow:0 0 0 var(--ink);background:#ffe082}
+  .runbtn .play{width:0;height:0;border-left:14px solid var(--ink);border-top:9px solid transparent;border-bottom:9px solid transparent}
+  .code{
+    flex:1;padding:24px 24px;color:#cdd6f4;font-family:'JetBrains Mono',monospace;
+    font-size:30px;line-height:1.5;white-space:pre;tab-size:4;position:relative;overflow:hidden
+  }
+  .gut{display:inline-block;width:48px;color:#585b70;text-align:right;padding-right:18px;user-select:none}
+  .kw{color:#cba6f7}
+  .id{color:#89dceb}
+  .num{color:#fab387}
+  .punc{color:#94e2d5}
+  .str{color:#a6e3a1}
+  .com{color:#6c7086;font-style:italic}
+  .cur{display:inline-block;width:14px;height:32px;background:#fff;vertical-align:middle;margin-left:2px;animation:blink .9s steps(2,start) infinite;transform:translateY(-3px)}
+  @keyframes blink{to{visibility:hidden}}
+  .editArea{
+    flex:1;display:none;background:var(--code-bg);color:#cdd6f4;
+    font-family:'JetBrains Mono',monospace;font-size:28px;line-height:1.5;
+    padding:24px 24px;border:0;outline:0;resize:none;tab-size:4;white-space:pre
+  }
+  .editArea:focus{outline:3px solid var(--accent);outline-offset:-3px}
+  .errorbar{
+    display:none;background:#f38ba8;color:#11111b;padding:12px 22px;
+    font-family:'JetBrains Mono',monospace;font-size:18px;border-top:4px solid var(--ink);
+    white-space:pre-wrap
+  }
+  .errorbar.on{display:block}
+  .resetbtn{
+    background:#fff;color:var(--ink);font-family:'Bungee',sans-serif;
+    padding:8px 14px;border-radius:14px;border:3px solid var(--ink);font-size:16px;
+    box-shadow:0 4px 0 var(--ink); margin-right:10px; cursor:pointer;
+    transition:transform .12s, box-shadow .12s
+  }
+  .resetbtn:active{transform:translateY(4px);box-shadow:0 0 0 var(--ink)}
+  .runbtn{cursor:pointer}
+  body.play .resetbtn{display:inline-block}
+  body:not(.play) .resetbtn{display:none}
+  body.play .editArea{display:block}
+  body.play .code{display:none}
+  body.play .file::after{content:' · live playground';color:var(--accent)}
+  /* Animation/video mode: hide the terminal so the canvas can fill the right
+     column. Play mode keeps it visible below the canvas. */
+  body:not(.play) .terminal{display:none}
+  .canvasCard{
+    background:#fff;border-radius:24px;border:6px solid var(--ink);
+    box-shadow:0 12px 0 var(--ink), 0 24px 64px rgba(0,0,0,.35);
+    display:flex;flex-direction:column;overflow:hidden
+  }
+  .canvasTitle{
+    background:var(--shell);color:#fff;padding:14px 22px;border-bottom:4px solid var(--ink);
+    font-family:'Bungee',sans-serif;font-size:22px;letter-spacing:.5px;
+    display:flex;align-items:center;gap:14px
+  }
+  .canvasTitle .badge{background:var(--accent);color:var(--ink);padding:4px 12px;border-radius:10px;border:2px solid var(--ink);font-size:16px}
+  /* Canvas card body centres a square canvas so the drawing's pixel aspect
+     stays 1:1 (a square stays square). The canvas scales down to fit the
+     available space when the terminal is shown below it. */
+  .canvasCard{align-items:center;flex:1;min-height:0}
+  .canvasBody{flex:1;display:flex;align-items:center;justify-content:center;background:#fffaf0;width:100%;min-height:0;padding:8px}
+  #cv{display:block;background:#fffaf0;max-width:100%;max-height:100%;aspect-ratio:1/1;width:auto;height:auto}
+  .toast{position:absolute;left:50%;bottom:30px;transform:translateX(-50%);
+    background:var(--pink);color:#fff;font-family:'Bungee',sans-serif;font-size:26px;
+    padding:10px 24px;border-radius:14px;border:3px solid var(--ink);
+    box-shadow:0 4px 0 var(--ink); opacity:0; transition:opacity .25s}
+  .toast.on{opacity:1}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="leftCol">
+    <div class="editor">
+      <div class="titlebar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="file">main.py</span>
+        <button class="resetbtn" id="resetbtn">↺ RESET</button>
+        <button class="runbtn" id="runbtn"><span class="play"></span>RUN</button>
+      </div>
+      <div class="code" id="code"></div>
+      <textarea class="editArea" id="editArea" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+      <div class="errorbar" id="errorbar"></div>
+    </div>
+  </div>
+  <div class="rightCol" id="rightCol">
+    <div class="canvasCard">
+      <div class="canvasTitle">🐢 Todd's Canvas <span class="badge" id="canvasBadge">ready</span><button class="expandbtn" id="canvasExpand" title="Maximise canvas">⤢</button></div>
+      <div class="canvasBody"><canvas id="cv" width="800" height="800"></canvas></div>
+    </div>
+    <div class="splitter" id="splitter" role="separator" aria-orientation="horizontal" title="Drag to resize"></div>
+    <div class="terminal">
+      <div class="termBar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="lbl">terminal &mdash; output</span>
+        <button class="expandbtn" id="termExpand" title="Maximise terminal">⤢</button>
+      </div>
+      <div class="termBody" id="termBody"><span class="muted">▸ ready — print() output and input() prompts appear here when you press RUN</span></div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast">▶ RUNNING…</div>
+
+<script>
+const STEPS = {
+  1: {
+    src: `import turtle\n\nt = turtle.Turtle()`,
+    draw: function*(){ yield* []; }
+  },
+  2: {
+    src: `import turtle\n\nt = turtle.Turtle()\nt.forward(100)`,
+    draw: function*(){ yield ['forward', 200]; }
+  },
+  3: {
+    src: `import turtle\n\nt = turtle.Turtle()\nt.forward(100)\nt.right(90)\nt.forward(100)`,
+    draw: function*(){ yield ['forward', 200]; yield ['right', 90]; yield ['forward', 200]; }
+  },
+  4: {
+    src: `import turtle\n\nt = turtle.Turtle()\nt.forward(100)\nt.right(90)\nt.forward(100)\nt.right(90)\nt.forward(100)\nt.right(90)\nt.forward(100)\nt.right(90)`,
+    draw: function*(){ for (let i=0;i<4;i++){ yield ['forward', 200]; yield ['right', 90]; } }
+  },
+};
+
+function highlight(src){
+  return src
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/(#[^\n]*)/g,'<span class="com">$1</span>')
+    .replace(/('[^']*'|"[^"]*")/g,'<span class="str">$1</span>')
+    .replace(/\b(import|from|def|return|for|in|if|else|range|print|input)\b/g,'<span class="kw">$1</span>')
+    .replace(/\b(\d+)\b/g,'<span class="num">$1</span>')
+    .replace(/\b(turtle|Turtle|t|todd|forward|right|left|backward|fd|bk|rt|lt|color|pencolor|pensize|width|penup|pendown|pu|pd|goto|setheading|circle)\b/g,'<span class="id">$1</span>')
+    .replace(/([().,:])/g,'<span class="punc">$1</span>');
+}
+function gutterized(html){
+  const lines = html.split('\n');
+  return lines.map((ln,i) => `<span class="gut">${i+1}</span>${ln}`).join('\n');
+}
+
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+async function typeCode(target, fullSrc, startOffset, speed){
+  // Render `startOffset` chars instantly, then animate the rest one char at a time.
+  for (let i=startOffset;i<=fullSrc.length;i++){
+    const partial = fullSrc.slice(0,i);
+    const html = gutterized(highlight(partial));
+    target.innerHTML = html + '<span class="cur"></span>';
+    if (i === fullSrc.length) break;
+    const ch = fullSrc[i];
+    let delay = speed;
+    if (ch === '\n') delay = speed * 4;
+    if (ch === '(' || ch === ')') delay = speed * 1.4;
+    await sleep(delay);
+  }
+}
+
+// Canvas is 800x800 (square pixel ratio so a Python-square stays a square).
+const CANVAS_SIZE = 800;
+const TURTLE = {
+  x: CANVAS_SIZE / 2, y: CANVAS_SIZE / 2, heading: 0,
+  pen: '#d81b60', penWidth: 6,
+  speed: 320,
+  turnSpeed: 220,
+};
+
+function drawTurtle(ctx, x, y, heading){
+  const rad = heading * Math.PI / 180;
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate(rad);
+  ctx.fillStyle = '#7cb342'; ctx.strokeStyle = '#1d1d1f'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.ellipse(0, 0, 22, 18, 0, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#aed581';
+  ctx.beginPath(); ctx.arc(22, 0, 9, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-22,0); ctx.lineTo(-30,-4); ctx.lineTo(-30,4); ctx.closePath(); ctx.fill(); ctx.stroke();
+  for (const [dx,dy] of [[14,12],[14,-12],[-14,12],[-14,-12]]){
+    ctx.beginPath(); ctx.arc(dx,dy,5,0,Math.PI*2); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+let pathPoints = [];
+let TURTLE_VISIBLE = true;
+function redrawCanvas(ctx){
+  ctx.clearRect(0,0,CANVAS_SIZE,CANVAS_SIZE);
+  if (!TURTLE_VISIBLE) return;
+  ctx.lineCap='round'; ctx.lineJoin='round';
+  for (const seg of pathPoints){
+    if (!seg.pts || seg.pts.length < 2) continue;
+    ctx.strokeStyle = seg.color; ctx.lineWidth = seg.width;
+    ctx.beginPath();
+    ctx.moveTo(seg.pts[0].x, seg.pts[0].y);
+    for (let i=1;i<seg.pts.length;i++) ctx.lineTo(seg.pts[i].x, seg.pts[i].y);
+    ctx.stroke();
+  }
+  drawTurtle(ctx, TURTLE.x, TURTLE.y, TURTLE.heading);
+}
+
+async function animateForward(ctx, dist){
+  const startX = TURTLE.x, startY = TURTLE.y;
+  const rad = TURTLE.heading * Math.PI / 180;
+  const dx = Math.cos(rad), dy = Math.sin(rad);
+  const duration = Math.abs(dist) / TURTLE.speed * 1000;
+  const startT = performance.now();
+  const drawing = TURTLE.penDown !== false;
+  const seg = drawing ? { color: TURTLE.pen, width: TURTLE.penWidth, pts: [{x:startX, y:startY}] } : null;
+  if (drawing) pathPoints.push(seg);
+  return new Promise(resolve => {
+    function frame(now){
+      const t = Math.min(1, (now - startT) / Math.max(1, duration));
+      TURTLE.x = startX + dx * dist * t;
+      TURTLE.y = startY + dy * dist * t;
+      if (drawing) {
+        seg.pts[seg.pts.length - 1] = {x: TURTLE.x, y: TURTLE.y};
+        if (seg.pts.length === 1 || t > seg.pts.length / 30) seg.pts.push({x: TURTLE.x, y: TURTLE.y});
+      }
+      redrawCanvas(ctx);
+      if (t < 1) requestAnimationFrame(frame); else resolve();
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+async function animateTurn(ctx, deg){
+  const startH = TURTLE.heading;
+  const duration = Math.abs(deg) / TURTLE.turnSpeed * 1000;
+  const startT = performance.now();
+  return new Promise(resolve => {
+    function frame(now){
+      const t = Math.min(1, (now - startT) / duration);
+      TURTLE.heading = startH + deg * t;
+      redrawCanvas(ctx);
+      if (t < 1) requestAnimationFrame(frame); else resolve();
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+// Apply a sequence of static commands instantly (no animation), to seed the
+// canvas with a previous step's drawing state before the animation begins.
+function preDraw(ctx, cmds){
+  for (const cmd of cmds){
+    if (cmd[0] === 'forward'){
+      const startX = TURTLE.x, startY = TURTLE.y;
+      const rad = TURTLE.heading * Math.PI / 180;
+      const dx = Math.cos(rad), dy = Math.sin(rad);
+      const endX = startX + dx * cmd[1], endY = startY + dy * cmd[1];
+      pathPoints.push({color: TURTLE.pen, width: TURTLE.penWidth, pts: [{x:startX,y:startY},{x:endX,y:endY}]});
+      TURTLE.x = endX; TURTLE.y = endY;
+    } else if (cmd[0] === 'right'){
+      TURTLE.heading += cmd[1];
+    } else if (cmd[0] === 'left'){
+      TURTLE.heading -= cmd[1];
+    }
+  }
+  redrawCanvas(ctx);
+}
+
+function parseUserCode(src){
+  const rawLines = src.replace(/\t/g, '    ').split('\n');
+  const lines = rawLines.map((ln, i) => {
+    const noComment = ln.replace(/#.*$/, '');
+    return { lineNo: i + 1, text: noComment.replace(/\s+$/, '') };
+  });
+  const cmds = [];
+  const TURTLE_NAMES = new Set(['t', 'todd', 'turtle']);
+  function parseStmt(text, lineNo){
+    const t = text.trim();
+    if (!t) return null;
+    if (/^import\s+turtle\b/.test(t)) return null;
+    if (/^from\s+turtle\s+import\b/.test(t)) return null;
+    let m = t.match(/^([a-zA-Z_]\w*)\s*=\s*turtle\.Turtle\s*\(\s*\)\s*$/);
+    if (m) { TURTLE_NAMES.add(m[1]); return null; }
+    // Bare print(...) call — supports string literals, numbers, and simple
+    // string concatenation with `+`.
+    m = t.match(/^print\s*\((.*)\)\s*$/);
+    if (m) return ['print', evalPrintArgs(m[1], lineNo)];
+    m = t.match(/^([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\s*\(([^)]*)\)\s*$/);
+    if (!m) throw new Error('Line ' + lineNo + ': don\'t understand → ' + t);
+    const [, obj, method, argsRaw] = m;
+    if (!TURTLE_NAMES.has(obj)) throw new Error('Line ' + lineNo + ': unknown turtle "' + obj + '"');
+    const args = argsRaw.trim() === '' ? [] : argsRaw.split(',').map(a => parseArg(a.trim(), lineNo));
+    return mapMethod(method, args, lineNo);
+  }
+  function evalPrintArgs(raw, lineNo){
+    // Split on commas at top level (ignore commas inside quotes).
+    const parts = []; let cur = ''; let q = null;
+    for (let i=0;i<raw.length;i++){
+      const c = raw[i];
+      if (q){ cur += c; if (c === q) q = null; continue; }
+      if (c === '"' || c === "'"){ q = c; cur += c; continue; }
+      if (c === ','){ parts.push(cur); cur = ''; continue; }
+      cur += c;
+    }
+    if (cur.trim()) parts.push(cur);
+    // Each part can be a sum of strings/numbers separated by `+`.
+    const out = parts.map(p => {
+      const subs = p.split('+').map(s => s.trim());
+      const vals = subs.map(s => {
+        const sm = s.match(/^['"](.*)['"]$/);
+        if (sm) return sm[1];
+        if (/^-?\d+(\.\d+)?$/.test(s)) return parseFloat(s);
+        throw new Error('Line ' + lineNo + ': can\'t print → ' + s);
+      });
+      // If every value is a number, do arithmetic; otherwise string concat
+      // (coercing numbers to strings, like Python's str()).
+      if (vals.every(v => typeof v === 'number')) {
+        return String(vals.reduce((a, b) => a + b, 0));
+      }
+      return vals.map(v => String(v)).join('');
+    });
+    return out.join(' ');
+  }
+  function parseArg(a, lineNo){
+    let m = a.match(/^['"](.*)['"]$/);
+    if (m) return m[1];
+    if (/^-?\d+(\.\d+)?$/.test(a)) return parseFloat(a);
+    throw new Error('Line ' + lineNo + ': can\'t read value → ' + a);
+  }
+  function mapMethod(method, args, lineNo){
+    const expectN = (n) => { if (args.length !== n) throw new Error('Line ' + lineNo + ': ' + method + '() needs ' + n + ' value(s)'); };
+    switch (method) {
+      case 'forward': case 'fd':       expectN(1); return ['forward', args[0]];
+      case 'backward': case 'bk': case 'back': expectN(1); return ['forward', -args[0]];
+      case 'right': case 'rt':         expectN(1); return ['right', args[0]];
+      case 'left':  case 'lt':         expectN(1); return ['left',  args[0]];
+      case 'color': case 'pencolor':   expectN(1); return ['color', args[0]];
+      case 'pensize': case 'width':    expectN(1); return ['pensize', args[0]];
+      case 'penup': case 'pu':         expectN(0); return ['penup'];
+      case 'pendown': case 'pd':       expectN(0); return ['pendown'];
+      case 'goto':                     if (args.length !== 2) throw new Error('Line ' + lineNo + ': goto(x, y) needs 2 numbers'); return ['goto', args[0], args[1]];
+      case 'setheading':               expectN(1); return ['setheading', args[0]];
+      case 'circle':                   expectN(1); return ['circle', args[0]];
+      default: throw new Error('Line ' + lineNo + ': don\'t know how to do .' + method + '() yet');
+    }
+  }
+  function indentOf(line){ return line.match(/^( *)/)[0].length; }
+  let i = 0;
+  while (i < lines.length) {
+    const ln = lines[i];
+    if (!ln.text.trim()) { i++; continue; }
+    const baseIndent = indentOf(ln.text);
+    const forMatch = ln.text.trim().match(/^for\s+([a-zA-Z_]\w*)\s+in\s+range\s*\(\s*(\d+)\s*\)\s*:\s*$/);
+    if (forMatch) {
+      const repeat = parseInt(forMatch[2], 10);
+      const body = []; i++;
+      while (i < lines.length && (lines[i].text.trim() === '' || indentOf(lines[i].text) > baseIndent)) {
+        if (lines[i].text.trim()) body.push(lines[i]); i++;
+      }
+      if (body.length === 0) throw new Error('Line ' + ln.lineNo + ': empty for-loop body');
+      for (let r = 0; r < repeat; r++) for (const b of body) { const cmd = parseStmt(b.text, b.lineNo); if (cmd) cmds.push(cmd); }
+      continue;
+    }
+    if (baseIndent > 0) throw new Error('Line ' + ln.lineNo + ': unexpected indent');
+    const cmd = parseStmt(ln.text, ln.lineNo);
+    if (cmd) cmds.push(cmd);
+    i++;
+  }
+  return cmds;
+}
+
+function resetWorld(ctx){
+  TURTLE.x = CANVAS_SIZE / 2; TURTLE.y = CANVAS_SIZE / 2; TURTLE.heading = 0;
+  TURTLE.pen = '#d81b60'; TURTLE.penWidth = 6; TURTLE.penDown = true;
+  pathPoints = []; redrawCanvas(ctx);
+  termClear();
+}
+
+async function executeCommands(ctx, cmds){
+  for (const cmd of cmds) {
+    switch (cmd[0]) {
+      case 'forward': await animateForward(ctx, cmd[1] * 2); break;
+      case 'right':   await animateTurn(ctx, cmd[1]); break;
+      case 'left':    await animateTurn(ctx, -cmd[1]); break;
+      case 'color':   TURTLE.pen = cmd[1]; redrawCanvas(ctx); break;
+      case 'pensize': TURTLE.penWidth = cmd[1]; redrawCanvas(ctx); break;
+      case 'penup':   TURTLE.penDown = false; break;
+      case 'pendown': TURTLE.penDown = true; break;
+      case 'goto':    TURTLE.x = CANVAS_SIZE/2 + cmd[1]; TURTLE.y = CANVAS_SIZE/2 - cmd[2]; redrawCanvas(ctx); break;
+      case 'setheading': TURTLE.heading = -cmd[1]; redrawCanvas(ctx); break;
+      case 'print':   termPrint(cmd[1]); break;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Terminal panel: holds output from print(), input() prompts, and errors.
+// Used by both the built-in parser (animation/video mode) and the Pyodide
+// real-Python runtime (play mode).
+// ---------------------------------------------------------------------------
+function termClear(){
+  const el = document.getElementById('termBody');
+  if (el) el.innerHTML = '<span class="muted">▸ ready — output will appear here when you press RUN</span>';
+}
+function termWipePlaceholder(){
+  const el = document.getElementById('termBody');
+  if (el && el.querySelector('.muted')) el.innerHTML = '';
+}
+function termWrite(text, cls){
+  const el = document.getElementById('termBody');
+  if (!el) return;
+  termWipePlaceholder();
+  const node = cls
+    ? Object.assign(document.createElement('span'), { className: cls, textContent: String(text) })
+    : document.createTextNode(String(text));
+  el.appendChild(node);
+  el.scrollTop = el.scrollHeight;
+}
+function termPrint(text){
+  // Used by the built-in parser path (animation/video); always one-line.
+  termWrite(String(text) + '\n');
+}
+function termPrintErr(text){
+  termWrite(String(text), 'err');
+}
+// Show a light-grey italic "Press any key to continue" line and resolve when
+// any key is pressed. Focus stays in the terminal so the kid can immediately
+// dismiss it without clicking. The hint and the hidden focus catcher are
+// removed when a key is pressed (or when the next RUN starts and clears the
+// terminal).
+function termAwaitAnyKey(){
+  const el = document.getElementById('termBody');
+  if (!el) return Promise.resolve();
+  termWipePlaceholder();
+  // Make sure the hint sits on its own line.
+  const lastChar = el.textContent.slice(-1);
+  if (lastChar && lastChar !== '\n') el.appendChild(document.createTextNode('\n'));
+  const hint = document.createElement('span');
+  hint.className = 'muted';
+  hint.textContent = '▸ Press any key to continue';
+  el.appendChild(hint);
+  el.scrollTop = el.scrollHeight;
+  // Invisible input absorbs keystrokes so the terminal area "has focus".
+  const catcher = document.createElement('input');
+  catcher.setAttribute('aria-label', 'Press any key to continue');
+  catcher.style.cssText = 'position:absolute;opacity:0;width:1px;height:1px;border:0;padding:0;margin:0;pointer-events:none';
+  el.appendChild(catcher);
+  catcher.focus();
+  return new Promise(resolve => {
+    function done(){
+      catcher.removeEventListener('keydown', done);
+      el.removeEventListener('click', refocus);
+      if (hint.parentNode) hint.parentNode.removeChild(hint);
+      if (catcher.parentNode) catcher.parentNode.removeChild(catcher);
+      resolve();
+    }
+    function refocus(){ catcher.focus(); }
+    catcher.addEventListener('keydown', done);
+    // Clicking anywhere in the terminal re-grabs focus so the next keystroke
+    // dismisses the hint.
+    el.addEventListener('click', refocus);
+  });
+}
+async function termAskInput(prompt){
+  // Renders the prompt, then a small text field; resolves with the value
+  // when Enter is pressed.
+  const el = document.getElementById('termBody');
+  if (!el) return '';
+  termWipePlaceholder();
+  const wrap = document.createElement('div');
+  if (prompt) {
+    const p = document.createElement('span');
+    p.className = 'prompt'; p.textContent = prompt + ' ';
+    wrap.appendChild(p);
+  }
+  const input = document.createElement('input');
+  input.style.cssText = 'background:transparent;border:0;outline:0;color:#fff;font-family:inherit;font-size:inherit;width:60%';
+  wrap.appendChild(input);
+  el.appendChild(wrap);
+  el.scrollTop = el.scrollHeight;
+  input.focus();
+  return new Promise(resolve => {
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        const val = input.value;
+        wrap.removeChild(input);
+        wrap.appendChild(document.createTextNode(val + '\n'));
+        el.scrollTop = el.scrollHeight;
+        resolve(val);
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Real Python runtime via Pyodide (CPython compiled to WebAssembly).
+// Lazy-loaded the first time the user clicks RUN in play mode so the editor
+// page stays light when used as a video overlay.
+// ---------------------------------------------------------------------------
+let __pyodidePromise = null;
+window.__turtleQueue = [];
+window.toddTurtleCmd = function(...args){ window.__turtleQueue.push(args); };
+window.toddAskInput = function(prompt){ return termAskInput(prompt || ''); };
+window.toddTermWrite = function(text, cls){ termWrite(text, cls || null); };
+
+function loadScript(src){
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+async function ensurePyodide(badge){
+  if (__pyodidePromise) return __pyodidePromise;
+  __pyodidePromise = (async () => {
+    if (badge) badge.textContent = 'loading Python…';
+    if (typeof loadPyodide === 'undefined') {
+      await loadScript('https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js');
+    }
+    const py = await loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.27.7/full/' });
+    py.setStdout({ batched: (s) => termWrite(s + '\n') });
+    py.setStderr({ batched: (s) => termWrite(s + '\n', 'err') });
+    // Install a turtle shim + an input() that uses the in-page terminal.
+    py.runPython(`
+import builtins, sys, types
+from js import window as _w
+from pyodide.ffi import to_js
+
+def _aware_input(prompt=''):
+    # Synchronous fallback (only reached if the source-rewrite missed a call,
+    # e.g. input is used via a different name). Uses window.prompt so we still
+    # return a value rather than crashing.
+    p = '' if prompt is None else str(prompt)
+    if p:
+        _w.toddTermWrite(p, 'prompt')
+    v = _w.prompt(p)
+    s = '' if v is None else str(v)
+    _w.toddTermWrite(s + '\\n', None)
+    return s
+builtins.input = _aware_input
+
+async def __ainput(prompt=''):
+    # Async input that uses the in-page terminal. Source-rewriting in the
+    # JS run path turns 'input(' into 'await __ainput(' so kid code reads
+    # naturally as 'name = input(...)'.
+    p = '' if prompt is None else str(prompt)
+    v = await _w.toddAskInput(p)
+    return '' if v is None else str(v)
+builtins.__ainput = __ainput
+
+class _Turtle:
+    def __init__(self, *a, **kw):
+        _w.toddTurtleCmd('__new__')
+    def forward(self, d): _w.toddTurtleCmd('forward', float(d)); return self
+    fd = forward
+    def backward(self, d): _w.toddTurtleCmd('forward', -float(d)); return self
+    back = bk = backward
+    def right(self, a): _w.toddTurtleCmd('right', float(a)); return self
+    rt = right
+    def left(self, a): _w.toddTurtleCmd('left', float(a)); return self
+    lt = left
+    def color(self, c, *rest): _w.toddTurtleCmd('color', str(c)); return self
+    pencolor = color
+    def fillcolor(self, c, *rest): _w.toddTurtleCmd('color', str(c)); return self
+    def pensize(self, w): _w.toddTurtleCmd('pensize', float(w)); return self
+    width = pensize
+    def penup(self): _w.toddTurtleCmd('penup'); return self
+    pu = up = penup
+    def pendown(self): _w.toddTurtleCmd('pendown'); return self
+    pd = down = pendown
+    def goto(self, x, y=None):
+        if y is None: x, y = x[0], x[1]
+        _w.toddTurtleCmd('goto', float(x), float(y)); return self
+    setpos = setposition = goto
+    def setheading(self, a): _w.toddTurtleCmd('setheading', float(a)); return self
+    seth = setheading
+    def circle(self, r, *rest): _w.toddTurtleCmd('circle', float(r)); return self
+    def home(self): _w.toddTurtleCmd('goto', 0.0, 0.0); _w.toddTurtleCmd('setheading', 0.0); return self
+    def clear(self): _w.toddTurtleCmd('clear'); return self
+    def speed(self, *a, **kw): return self
+    def shape(self, *a, **kw): return self
+    def begin_fill(self, *a, **kw): return self
+    def end_fill(self, *a, **kw): return self
+    def dot(self, size=6, color=None, *rest):
+        # Render a dot as a tiny coloured pen-down move.
+        if color is not None:
+            _w.toddTurtleCmd('color', str(color))
+        _w.toddTurtleCmd('pensize', float(size))
+        _w.toddTurtleCmd('pendown')
+        _w.toddTurtleCmd('forward', 0.1)
+        return self
+    def write(self, *a, **kw): return self
+    def hideturtle(self): return self
+    def showturtle(self): return self
+    ht = hideturtle
+    st = showturtle
+    def done(self): pass
+    def position(self): return (0.0, 0.0)
+    pos = position
+    def heading(self): return 0.0
+
+_mod = types.ModuleType('turtle')
+_mod.Turtle = _Turtle
+_mod.Screen = lambda *a, **kw: types.SimpleNamespace(
+    bgcolor=lambda *a, **kw: None, setup=lambda *a, **kw: None,
+    title=lambda *a, **kw: None, mainloop=lambda *a, **kw: None,
+    exitonclick=lambda *a, **kw: None, tracer=lambda *a, **kw: None,
+    update=lambda *a, **kw: None,
+)
+# Module-level functional interface (turtle.forward(100) etc).
+_default = None
+def _ensure_default():
+    global _default
+    if _default is None: _default = _Turtle()
+    return _default
+for _name in ['forward','fd','backward','back','bk','right','rt','left','lt',
+              'color','pencolor','fillcolor','pensize','width','penup','pu',
+              'pendown','pd','goto','setpos','setposition','setheading','seth',
+              'circle','home','clear','hideturtle','showturtle','ht','st',
+              'speed','shape','done','begin_fill','end_fill','dot','write']:
+    def _make(n):
+        def _f(*a, **kw): return getattr(_ensure_default(), n)(*a, **kw)
+        return _f
+    setattr(_mod, _name, _make(_name))
+_mod.bgcolor = lambda *a, **kw: None
+_mod.title = lambda *a, **kw: None
+_mod.mainloop = lambda *a, **kw: None
+_mod.exitonclick = lambda *a, **kw: None
+_mod.tracer = lambda *a, **kw: None
+_mod.update = lambda *a, **kw: None
+sys.modules['turtle'] = _mod
+`);
+    return py;
+  })();
+  return __pyodidePromise;
+}
+
+// Translate a queued turtle command from Pyodide into the renderer's command
+// shape used by executeCommands().
+function normalizeTurtleCmd(raw){
+  const op = raw[0];
+  if (op === '__new__' || op === 'clear') return null;
+  if (op === 'forward' || op === 'right' || op === 'left'
+      || op === 'pensize' || op === 'color' || op === 'setheading'
+      || op === 'circle') return [op, raw[1]];
+  if (op === 'goto') return ['goto', raw[1], raw[2]];
+  if (op === 'penup' || op === 'pendown') return [op];
+  return null;
+}
+
+// Pre-draw seed routines for canvas continuity across "append" steps.
+const PREDRAWS = {
+  1: [],
+  2: [['forward', 200]],
+  3: [['forward', 200], ['right', 90], ['forward', 200]],
+};
+
+async function runAnimation(){
+  const params = new URLSearchParams(location.search);
+  const step = parseInt(params.get('step') || '1', 10);
+  const preTyped = parseInt(params.get('preTyped') || '0', 10);  // lines already on screen
+  const typeSpeed = parseInt(params.get('typeSpeed') || '70', 10);
+  const runDelay = parseInt(params.get('runDelay') || '500', 10);
+  const postHold = parseInt(params.get('postRunHold') || '2000', 10);
+  const startCanvas = parseInt(params.get('startCanvas') || '0', 10);
+  const noRun = params.get('noRun') === '1';
+  const hideTurtle = params.get('hideTurtle') === '1';
+  const def = STEPS[step] || STEPS[1];
+
+  const codeEl = document.getElementById('code');
+  const runBtn = document.getElementById('runbtn');
+  const toast = document.getElementById('toast');
+  const badge = document.getElementById('canvasBadge');
+  const ctx = document.getElementById('cv').getContext('2d');
+
+  // Seed canvas with prior drawing state, if requested.
+  TURTLE_VISIBLE = !hideTurtle;
+  resetWorld(ctx);
+  if (startCanvas && PREDRAWS[startCanvas]) preDraw(ctx, PREDRAWS[startCanvas]);
+  redrawCanvas(ctx);
+
+  // Compute starting char offset = end of line `preTyped` (1-based).
+  const fullSrc = def.src;
+  let startOffset = 0;
+  if (preTyped > 0) {
+    const allLines = fullSrc.split('\n');
+    startOffset = allLines.slice(0, preTyped).join('\n').length;
+  }
+  // Render the pre-typed prefix instantly with cursor parked at end of it.
+  codeEl.innerHTML = gutterized(highlight(fullSrc.slice(0, startOffset))) + '<span class="cur"></span>';
+
+  await sleep(600);
+  await typeCode(codeEl, fullSrc, startOffset, typeSpeed);
+  codeEl.innerHTML = gutterized(highlight(fullSrc));
+
+  if (noRun) {
+    // Type-only mode: no RUN press, no execution, just hold the final
+    // editor frame so the renderer captures it.
+    await sleep(postHold);
+    window.__doneRendering__ = true;
+    return;
+  }
+
+  await sleep(runDelay);
+  runBtn.classList.add('pressed');
+  toast.classList.add('on');
+  badge.textContent = 'running…';
+  await sleep(350);
+  runBtn.classList.remove('pressed');
+
+  // If turtle was hidden, reveal it now (RUN was pressed) and redraw any
+  // seeded path that was waiting in the wings.
+  if (!TURTLE_VISIBLE) {
+    TURTLE_VISIBLE = true;
+    redrawCanvas(ctx);
+  }
+
+  // Only animate the NEW commands (those introduced after the preTyped prefix).
+  // For simplicity, generate all commands then skip the count of commands
+  // already represented in the predraw seed.
+  const allCmds = [];
+  for (const c of def.draw()) allCmds.push(c);
+  const seed = (PREDRAWS[startCanvas] || []).length;
+  for (let i = seed; i < allCmds.length; i++){
+    const cmd = allCmds[i];
+    if (cmd[0] === 'forward') await animateForward(ctx, cmd[1]);
+    else if (cmd[0] === 'right') await animateTurn(ctx, cmd[1]);
+    else if (cmd[0] === 'left')  await animateTurn(ctx, -cmd[1]);
+  }
+
+  toast.classList.remove('on');
+  badge.textContent = 'done!';
+  await sleep(postHold);
+  window.__doneRendering__ = true;
+}
+
+function runInteractive(){
+  document.body.classList.add('play');
+  const params = new URLSearchParams(location.search);
+  const step = parseInt(params.get('step') || '1', 10);
+  const def = STEPS[step] || STEPS[1];
+
+  const editArea = document.getElementById('editArea');
+  const runBtn = document.getElementById('runbtn');
+  const resetBtn = document.getElementById('resetbtn');
+  const toast = document.getElementById('toast');
+  const badge = document.getElementById('canvasBadge');
+  const errBar = document.getElementById('errorbar');
+  const ctx = document.getElementById('cv').getContext('2d');
+
+  editArea.value = def.src;
+  resetWorld(ctx);
+  badge.textContent = 'ready — press RUN';
+
+  let running = false;
+  async function go(){
+    if (running) return;
+    running = true;
+    errBar.classList.remove('on'); errBar.textContent = '';
+    resetWorld(ctx);
+    runBtn.classList.add('pressed'); toast.classList.add('on');
+    badge.textContent = 'running…';
+    await sleep(150); runBtn.classList.remove('pressed');
+    try {
+      const py = await ensurePyodide(badge);
+      window.__turtleQueue = [];
+      badge.textContent = 'running…';
+      // Rewrite top-level input(...) calls into 'await __ainput(...)' so the
+      // kid's code can read input from the terminal without writing 'await'.
+      // Only matches whole-word 'input' followed by '(' at the start of a
+      // function call, on lines that aren't comments.
+      const src = editArea.value.replace(/(^|[^\w.])input\s*\(/g, '$1await __ainput(');
+      await py.runPythonAsync(src);
+      // Drain queued turtle commands and animate them.
+      const cmds = window.__turtleQueue.map(normalizeTurtleCmd).filter(Boolean);
+      window.__turtleQueue = [];
+      await executeCommands(ctx, cmds);
+      badge.textContent = 'done!';
+    } catch (e) {
+      badge.textContent = 'oops!';
+      const msg = (e && e.message) ? e.message : String(e);
+      errBar.textContent = '⚠ ' + msg.split('\n').slice(-3).join(' · ');
+      errBar.classList.add('on');
+      termPrintErr('\n' + msg + '\n');
+    }
+    toast.classList.remove('on'); running = false;
+    // Park focus in the terminal with a "Press any key to continue" hint.
+    await termAwaitAnyKey();
+  }
+  function reset(){
+    if (running) return;
+    resetWorld(ctx); errBar.classList.remove('on');
+    badge.textContent = 'ready — press RUN';
+  }
+  runBtn.addEventListener('click', go);
+  resetBtn.addEventListener('click', reset);
+  editArea.addEventListener('keydown', (ev) => {
+    // Tab inserts 4 spaces (or dedents on Shift+Tab) instead of moving focus.
+    if (ev.key === 'Tab') {
+      ev.preventDefault();
+      const s = editArea.selectionStart, e = editArea.selectionEnd;
+      const v = editArea.value;
+      if (s !== e && v.slice(s, e).indexOf('\n') !== -1) {
+        // Multi-line selection: indent/dedent every line in the range.
+        const lineStart = v.lastIndexOf('\n', s - 1) + 1;
+        const block = v.slice(lineStart, e);
+        let updated;
+        if (ev.shiftKey) {
+          updated = block.replace(/^( {1,4})/gm, '');
+        } else {
+          updated = block.replace(/^/gm, '    ');
+        }
+        editArea.value = v.slice(0, lineStart) + updated + v.slice(e);
+        editArea.selectionStart = lineStart;
+        editArea.selectionEnd = lineStart + updated.length;
+      } else if (ev.shiftKey) {
+        // Shift+Tab on a single line: remove up to 4 leading spaces.
+        const lineStart = v.lastIndexOf('\n', s - 1) + 1;
+        const lead = v.slice(lineStart).match(/^ {1,4}/);
+        if (lead) {
+          const n = lead[0].length;
+          editArea.value = v.slice(0, lineStart) + v.slice(lineStart + n);
+          editArea.selectionStart = editArea.selectionEnd = Math.max(lineStart, s - n);
+        }
+      } else {
+        editArea.value = v.slice(0, s) + '    ' + v.slice(e);
+        editArea.selectionStart = editArea.selectionEnd = s + 4;
+      }
+      return;
+    }
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+      ev.preventDefault();
+      if (ev.shiftKey) reset(); else go();
+    }
+  });
+  // Kick off the Pyodide download in the background so the first RUN is fast.
+  ensurePyodide(badge).then(() => {
+    if (badge.textContent.startsWith('loading')) badge.textContent = 'ready — press RUN';
+  }).catch(() => {});
+}
+
+// "Try numbers" demo: takes step-2 source, runs it (draws line of 100),
+// then changes 100 -> 50 and runs (short line), then changes 50 -> 300 and
+// runs (long line). Used to illustrate the pause-try-1 explore-on-your-own
+// segment of the video.
+async function runTryNumbers(){
+  const codeEl = document.getElementById('code');
+  const runBtn = document.getElementById('runbtn');
+  const toast = document.getElementById('toast');
+  const badge = document.getElementById('canvasBadge');
+  const ctx = document.getElementById('cv').getContext('2d');
+
+  const baseLines = ['import turtle', '', 't = turtle.Turtle()'];
+  const numbers = [100, 50, 300];
+
+  function render(num){
+    const src = baseLines.concat([`t.forward(${num})`]).join('\n');
+    codeEl.innerHTML = gutterized(highlight(src));
+  }
+
+  async function runWith(num, dist){
+    // Reset world so each demo is independent.
+    resetWorld(ctx);
+    render(num);
+    await sleep(700);
+    runBtn.classList.add('pressed');
+    toast.classList.add('on');
+    badge.textContent = 'running…';
+    await sleep(350);
+    runBtn.classList.remove('pressed');
+    if (dist !== 0) await animateForward(ctx, dist * 2);
+    badge.textContent = 'done!';
+    toast.classList.remove('on');
+    await sleep(600);
+  }
+
+  resetWorld(ctx);
+  render(100);
+  await sleep(800);
+  // First try: 100
+  await runWith(100, 100);
+  await sleep(400);
+  // Now "edit" the number to 50
+  badge.textContent = 'try 50';
+  await runWith(50, 50);
+  await sleep(400);
+  // Now bigger: 300
+  badge.textContent = 'try 300';
+  await runWith(300, 300);
+  await sleep(800);
+  badge.textContent = 'experimenting!';
+  await sleep(800);
+  window.__doneRendering__ = true;
+}
+
+// Draggable splitter between Todd's Canvas and the terminal in play mode.
+// Click+drag the grey grip to resize; either pane can be expanded to (almost)
+// the entire right column.
+function installSplitter(){
+  const col = document.getElementById('rightCol');
+  const split = document.getElementById('splitter');
+  if (!col || !split) return;
+  const canvas = col.querySelector('.canvasCard');
+  const term = col.querySelector('.terminal');
+  if (!canvas || !term) return;
+  const MIN = 40; // px — keep at least the title bar visible on each side
+  let dragging = false;
+  function onDown(e){
+    dragging = true;
+    split.classList.add('dragging');
+    document.body.style.cursor = 'row-resize';
+    e.preventDefault();
+  }
+  function onMove(e){
+    if (!dragging) return;
+    const pt = e.touches ? e.touches[0] : e;
+    const rect = col.getBoundingClientRect();
+    const splitH = split.getBoundingClientRect().height;
+    const total = rect.height - splitH;
+    let top = pt.clientY - rect.top - splitH/2;
+    top = Math.max(MIN, Math.min(total - MIN, top));
+    const bottom = total - top;
+    canvas.style.flex = `0 0 ${top}px`;
+    term.style.flex = `0 0 ${bottom}px`;
+  }
+  function onUp(){
+    if (!dragging) return;
+    dragging = false;
+    split.classList.remove('dragging');
+    document.body.style.cursor = '';
+  }
+  split.addEventListener('mousedown', onDown);
+  split.addEventListener('touchstart', onDown, {passive:false});
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('touchmove', onMove, {passive:false});
+  window.addEventListener('mouseup', onUp);
+  window.addEventListener('touchend', onUp);
+
+  // Expand / restore buttons. Clicking ⤢ on a pane hides the other pane and
+  // the splitter; clicking again (on either button) restores the previous
+  // canvas/terminal flex sizes.
+  const cBtn = document.getElementById('canvasExpand');
+  const tBtn = document.getElementById('termExpand');
+  let saved = null;
+  function snapshot(){
+    saved = {c: canvas.style.flex, t: term.style.flex};
+  }
+  function restore(){
+    col.classList.remove('canvas-max','term-max');
+    if (saved){
+      canvas.style.flex = saved.c;
+      term.style.flex = saved.t;
+    }
+    setBtns();
+  }
+  function setBtns(){
+    const cMax = col.classList.contains('canvas-max');
+    const tMax = col.classList.contains('term-max');
+    if (cBtn){ cBtn.textContent = cMax ? '⤡' : '⤢'; cBtn.title = cMax ? 'Restore' : 'Maximise canvas'; }
+    if (tBtn){ tBtn.textContent = tMax ? '⤡' : '⤢'; tBtn.title = tMax ? 'Restore' : 'Maximise terminal'; }
+  }
+  function toggle(which){
+    const cls = which === 'canvas' ? 'canvas-max' : 'term-max';
+    if (col.classList.contains(cls)){ restore(); return; }
+    if (!col.classList.contains('canvas-max') && !col.classList.contains('term-max')) snapshot();
+    col.classList.remove('canvas-max','term-max');
+    col.classList.add(cls);
+    setBtns();
+  }
+  if (cBtn) cBtn.addEventListener('click', () => toggle('canvas'));
+  if (tBtn) tBtn.addEventListener('click', () => toggle('term'));
+}
+
+function main(){
+  const params = new URLSearchParams(location.search);
+  installSplitter();
+  if (params.get('mode') === 'play') runInteractive();
+  else if (params.get('demo') === 'tryNumbers') runTryNumbers();
+  else runAnimation();
+}
+
+document.fonts.ready.then(main);
+</script>
+</body>
+</html>
