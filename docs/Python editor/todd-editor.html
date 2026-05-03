@@ -321,7 +321,11 @@ async function animateForward(ctx, dist){
   const duration = Math.abs(dist) / TURTLE.speed * 1000;
   const startT = performance.now();
   const drawing = TURTLE.penDown !== false;
-  const seg = drawing ? { color: TURTLE.pen, width: TURTLE.penWidth, pts: [{x:startX, y:startY}] } : null;
+  // Segment always retains the start point as pts[0]; pts[1] is the live tip
+  // updated each frame, with extra interpolated points pushed for long moves.
+  // (Earlier versions overwrote pts[0] on the first frame, losing the true
+  // start and leaving small gaps at every corner.)
+  const seg = drawing ? { color: TURTLE.pen, width: TURTLE.penWidth, pts: [{x:startX, y:startY}, {x:startX, y:startY}] } : null;
   if (drawing) pathPoints.push(seg);
   return new Promise(resolve => {
     function frame(now){
@@ -330,7 +334,7 @@ async function animateForward(ctx, dist){
       TURTLE.y = startY + dy * dist * t;
       if (drawing) {
         seg.pts[seg.pts.length - 1] = {x: TURTLE.x, y: TURTLE.y};
-        if (seg.pts.length === 1 || t > seg.pts.length / 30) seg.pts.push({x: TURTLE.x, y: TURTLE.y});
+        if (t > (seg.pts.length - 1) / 30) seg.pts.push({x: TURTLE.x, y: TURTLE.y});
       }
       redrawCanvas(ctx);
       if (t < 1) requestAnimationFrame(frame); else resolve();
