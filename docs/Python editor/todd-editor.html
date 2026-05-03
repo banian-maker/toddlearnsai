@@ -851,7 +851,8 @@ async function runAnimation(){
 function runInteractive(){
   document.body.classList.add('play');
   const params = new URLSearchParams(location.search);
-  const step = parseInt(params.get('step') || '1', 10);
+  const stepParam = params.get('step');
+  const step = parseInt(stepParam || '1', 10);
   const def = STEPS[step] || STEPS[1];
 
   const editArea = document.getElementById('editArea');
@@ -862,7 +863,9 @@ function runInteractive(){
   const errBar = document.getElementById('errorbar');
   const ctx = document.getElementById('cv').getContext('2d');
 
-  editArea.value = def.src;
+  // When the user opens the editor with no `step` query param, start with an
+  // empty editor (no pre-existing code) so kids can type from scratch.
+  editArea.value = stepParam ? def.src : '';
   resetWorld(ctx);
   badge.textContent = 'ready — press RUN';
 
