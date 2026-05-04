@@ -137,11 +137,23 @@
   .cur{display:inline-block;width:14px;height:32px;background:#fff;vertical-align:middle;margin-left:2px;animation:blink .9s steps(2,start) infinite;transform:translateY(-3px)}
   @keyframes blink{to{visibility:hidden}}
   .editArea{
-    flex:1;display:none;background:var(--code-bg);color:#cdd6f4;
+    flex:1;display:none;background:transparent;color:transparent;caret-color:#fff;
     font-family:'JetBrains Mono',monospace;font-size:28px;line-height:1.5;
-    padding:24px 24px;border:0;outline:0;resize:none;tab-size:4;white-space:pre
+    padding:24px 24px;border:0;outline:0;resize:none;tab-size:4;white-space:pre;
+    position:absolute;inset:0;z-index:2;overflow:auto
   }
+  .editArea::selection{background:rgba(255,255,255,.30)}
   .editArea:focus{outline:3px solid var(--accent);outline-offset:-3px}
+  /* Highlighted code mirror that sits BEHIND the (transparent-text) textarea
+     in play mode, so kids see syntax colors as they type. */
+  .codeHL{
+    position:absolute;inset:0;margin:0;z-index:1;pointer-events:none;
+    background:var(--code-bg);color:#cdd6f4;
+    font-family:'JetBrains Mono',monospace;font-size:28px;line-height:1.5;
+    padding:24px 24px;tab-size:4;white-space:pre;overflow:hidden
+  }
+  .editWrap{display:none;position:relative;flex:1;min-height:0;background:var(--code-bg);overflow:hidden}
+  body.play .editWrap{display:block}
   .errorbar{
     display:none;background:#f38ba8;color:#11111b;padding:12px 22px;
     font-family:'JetBrains Mono',monospace;font-size:18px;border-top:4px solid var(--ink);
@@ -199,7 +211,10 @@
         <button class="runbtn" id="runbtn"><span class="play"></span>RUN</button>
       </div>
       <div class="code" id="code"></div>
-      <textarea class="editArea" id="editArea" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+      <div class="editWrap" id="editWrap">
+        <pre class="codeHL" id="codeHL"></pre>
+        <textarea class="editArea" id="editArea" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+      </div>
       <div class="errorbar" id="errorbar"></div>
     </div>
   </div>
@@ -239,17 +254,95 @@ const STEPS = {
     src: `import turtle\n\nt = turtle.Turtle()\nt.forward(100)\nt.right(90)\nt.forward(100)\nt.right(90)\nt.forward(100)\nt.right(90)\nt.forward(100)\nt.right(90)`,
     draw: function*(){ for (let i=0;i<4;i++){ yield ['forward', 200]; yield ['right', 90]; } }
   },
+
+  // ===== Session 1 Chapter 2 — First Loop. Naming: s<N>c<M>-<K>. =====
+  // s1c2-1: the verbose 11-line square (recap of chapter 1's final code).
+  's1c2-1': {
+    src: `import turtle\n\nt = turtle.Turtle()\nt.forward(100)\nt.right(90)\nt.forward(100)\nt.right(90)\nt.forward(100)\nt.right(90)\nt.forward(100)\nt.right(90)`,
+    draw: function*(){ for (let i=0;i<4;i++){ yield ['forward', 200]; yield ['right', 90]; } }
+  },
+  // s1c2-2: same square in 3 lines using a for-loop. THE compression "whoa".
+  // editsFrom['s1c2-1']: erase the 8 forward/right lines and type the for-loop in their place.
+  's1c2-2': {
+    src: `import turtle\n\nt = turtle.Turtle()\n\nfor i in range(4):\n    t.forward(100)\n    t.right(90)`,
+    draw: function*(){ for (let i=0;i<4;i++){ yield ['forward', 200]; yield ['right', 90]; } },
+    editsFrom: {
+      's1c2-1': [
+        { find: 't.forward(100)\nt.right(90)\nt.forward(100)\nt.right(90)\nt.forward(100)\nt.right(90)\nt.forward(100)\nt.right(90)',
+          replace: '\nfor i in range(4):\n    t.forward(100)\n    t.right(90)' }
+      ]
+    }
+  },
+  // s1c2-2tri: same loop with range(3) -> open zigzag (the "predict the triangle" surprise).
+  's1c2-2tri': {
+    src: `import turtle\n\nt = turtle.Turtle()\n\nfor i in range(3):\n    t.forward(100)\n    t.right(90)`,
+    draw: function*(){ for (let i=0;i<3;i++){ yield ['forward', 200]; yield ['right', 90]; } },
+    editsFrom: {
+      's1c2-2': [ { find: 'range(4)', replace: 'range(3)' } ]
+    }
+  },
+  // s1c2-2tri-fix: fix the angle so range(3) actually draws a triangle. right(90) -> right(120).
+  's1c2-2tri-fix': {
+    src: `import turtle\n\nt = turtle.Turtle()\n\nfor i in range(3):\n    t.forward(100)\n    t.right(120)`,
+    draw: function*(){ for (let i=0;i<3;i++){ yield ['forward', 200]; yield ['right', 120]; } },
+    editsFrom: {
+      's1c2-2tri': [ { find: 'right(90)', replace: 'right(120)' } ]
+    }
+  },
+  // s1c2-3: hexagon: change range(3) -> range(6), forward(100) -> forward(80), right(120) -> right(60).
+  's1c2-3': {
+    src: `import turtle\n\nt = turtle.Turtle()\n\nfor i in range(6):\n    t.forward(80)\n    t.right(60)`,
+    draw: function*(){ for (let i=0;i<6;i++){ yield ['forward', 160]; yield ['right', 60]; } },
+    editsFrom: {
+      's1c2-2': [
+        { find: 'range(4)',     replace: 'range(6)'  },
+        { find: 'forward(100)', replace: 'forward(80)' },
+        { find: 'right(90)',    replace: 'right(60)' }
+      ],
+      's1c2-2tri': [
+        { find: 'range(3)',     replace: 'range(6)'  },
+        { find: 'forward(100)', replace: 'forward(80)' },
+        { find: 'right(90)',    replace: 'right(60)' }
+      ],
+      's1c2-2tri-fix': [
+        { find: 'range(3)',     replace: 'range(6)'  },
+        { find: 'forward(100)', replace: 'forward(80)' },
+        { find: 'right(120)',   replace: 'right(60)' }
+      ]
+    }
+  },
+  // s1c2-4: circle: range(6) -> range(36), forward(80) -> forward(10), right(60) -> right(10).
+  // (No t.speed(0): the user wants every change to be one the kid can explain.)
+  's1c2-4': {
+    src: `import turtle\n\nt = turtle.Turtle()\n\nfor i in range(36):\n    t.forward(10)\n    t.right(10)`,
+    draw: function*(){ for (let i=0;i<36;i++){ yield ['forward', 20]; yield ['right', 10]; } },
+    editsFrom: {
+      's1c2-3': [
+        { find: 'range(6)',    replace: 'range(36)' },
+        { find: 'forward(80)', replace: 'forward(10)' },
+        { find: 'right(60)',   replace: 'right(10)' }
+      ]
+    }
+  },
 };
 
 function highlight(src){
-  return src
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-    .replace(/(#[^\n]*)/g,'<span class="com">$1</span>')
-    .replace(/('[^']*'|"[^"]*")/g,'<span class="str">$1</span>')
+  // Stash comments and strings as opaque placeholders BEFORE running keyword /
+  // identifier / punctuation regexes — otherwise those regexes can match the
+  // attribute text inside the spans we just generated (e.g. the "com" inside
+  // class="com") and corrupt the output. The placeholder uses a guard letter
+  // around the index so the number regex \b(\d+)\b can't match the index.
+  const tokens = [];
+  const stash = (html) => { tokens.push(html); return `\x00Z${tokens.length - 1}Z\x00`; };
+  let s = src.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  s = s.replace(/#[^\n]*/g,        m => stash(`<span class="com">${m}</span>`));
+  s = s.replace(/'[^'\n]*'|"[^"\n]*"/g, m => stash(`<span class="str">${m}</span>`));
+  s = s
     .replace(/\b(import|from|def|return|for|in|if|else|range|print|input)\b/g,'<span class="kw">$1</span>')
     .replace(/\b(\d+)\b/g,'<span class="num">$1</span>')
     .replace(/\b(turtle|Turtle|t|todd|forward|right|left|backward|fd|bk|rt|lt|color|pencolor|pensize|width|penup|pendown|pu|pd|goto|setheading|circle)\b/g,'<span class="id">$1</span>')
     .replace(/([().,:])/g,'<span class="punc">$1</span>');
+  return s.replace(/\x00Z(\d+)Z\x00/g, (_, i) => tokens[+i]);
 }
 function gutterized(html){
   const lines = html.split('\n');
@@ -767,16 +860,87 @@ const PREDRAWS = {
   1: [],
   2: [['forward', 200]],
   3: [['forward', 200], ['right', 90], ['forward', 200]],
+  // Chapter 1.2 — used to keep the previous shape on the canvas while the
+  // editor morphs to the next step (continuity for the kid viewer).
+  's1c2-1': (() => { const c=[]; for (let i=0;i<4;i++){ c.push(['forward',200]); c.push(['right',90]); } return c; })(),
+  's1c2-2': (() => { const c=[]; for (let i=0;i<4;i++){ c.push(['forward',200]); c.push(['right',90]); } return c; })(),
+  's1c2-2tri': (() => { const c=[]; for (let i=0;i<3;i++){ c.push(['forward',200]); c.push(['right',90]); } return c; })(),
+  's1c2-2tri-fix': (() => { const c=[]; for (let i=0;i<3;i++){ c.push(['forward',200]); c.push(['right',120]); } return c; })(),
+  's1c2-3': (() => { const c=[]; for (let i=0;i<6;i++){ c.push(['forward',160]); c.push(['right',60]); } return c; })(),
+  's1c2-4': (() => { const c=[]; for (let i=0;i<36;i++){ c.push(['forward',20]); c.push(['right',10]); } return c; })(),
 };
+
+// Animate a single textual edit on top of `currentSrc` and return the new src.
+// `edit` = { find: string, replace: string, occurrence?: number (1-based) }.
+// The cursor "moves" to the end of `find`, deletes `find.length` chars one
+// at a time (fast), then types `replace` chars at normal speed.
+async function applyEdit(codeEl, currentSrc, edit, speed){
+  const occ = (edit.occurrence || 1);
+  let idx = -1;
+  let from = 0;
+  for (let k = 0; k < occ; k++) {
+    idx = currentSrc.indexOf(edit.find, from);
+    if (idx < 0) return currentSrc; // not found, no-op
+    from = idx + 1;
+  }
+  const before = currentSrc.slice(0, idx);
+  const after  = currentSrc.slice(idx + edit.find.length);
+  // Pause so the viewer can see the editor BEFORE the change.
+  await sleep(450);
+  // Park cursor at end of the chunk we're about to delete.
+  let head = before + edit.find;
+  const renderWithCursor = (a, b) => {
+    // Render head + cursor + tail by inserting a sentinel char into the
+    // source, highlighting, then swapping it for the cursor span.
+    const marker = '\u0001';
+    const html = gutterized(highlight(a + marker + b));
+    codeEl.innerHTML = html.replace(marker, '<span class="cur"></span>');
+  };
+  renderWithCursor(head, after);
+  await sleep(250);
+  // Backspace through `find` — fast (speed/2 per char, min 18ms).
+  const delDelay = Math.max(18, Math.floor(speed * 0.5));
+  for (let i = edit.find.length; i > 0; i--) {
+    head = before + edit.find.slice(0, i - 1);
+    renderWithCursor(head, after);
+    await sleep(delDelay);
+  }
+  // Type `replace` at normal speed (\n is slower, like in typeCode).
+  for (let j = 0; j < edit.replace.length; j++) {
+    const ch = edit.replace[j];
+    head = before + edit.replace.slice(0, j + 1);
+    renderWithCursor(head, after);
+    let d = speed;
+    if (ch === '\n') d = speed * 4;
+    if (ch === '(' || ch === ')') d = Math.floor(speed * 1.4);
+    await sleep(d);
+  }
+  // Brief settle pause so the viewer registers the new value.
+  await sleep(250);
+  return before + edit.replace + after;
+}
+
+// Helper: parse step / startCanvas params. Allows string keys (e.g. 's1c2-1')
+// for chapter-appended STEPS so chapter 1's integer keys keep working.
+function parseKeyParam(raw, table){
+  if (raw == null || raw === '') return null;
+  if (Object.prototype.hasOwnProperty.call(table, raw)) return raw;
+  const n = parseInt(raw, 10);
+  return isNaN(n) ? raw : n;
+}
 
 async function runAnimation(){
   const params = new URLSearchParams(location.search);
-  const step = parseInt(params.get('step') || '1', 10);
+  const stepRaw = params.get('step') || '1';
+  const step = parseKeyParam(stepRaw, STEPS);
   const preTyped = parseInt(params.get('preTyped') || '0', 10);  // lines already on screen
   const typeSpeed = parseInt(params.get('typeSpeed') || '70', 10);
   const runDelay = parseInt(params.get('runDelay') || '500', 10);
   const postHold = parseInt(params.get('postRunHold') || '2000', 10);
-  const startCanvas = parseInt(params.get('startCanvas') || '0', 10);
+  const startCanvasRaw = params.get('startCanvas') || '';
+  const startCanvas = parseKeyParam(startCanvasRaw, PREDRAWS);
+  const initialSrcRaw = params.get('initialSrc') || '';
+  const initialSrc = parseKeyParam(initialSrcRaw, STEPS);
   const noRun = params.get('noRun') === '1';
   const hideTurtle = params.get('hideTurtle') === '1';
   const def = STEPS[step] || STEPS[1];
@@ -793,6 +957,46 @@ async function runAnimation(){
   if (startCanvas && PREDRAWS[startCanvas]) preDraw(ctx, PREDRAWS[startCanvas]);
   redrawCanvas(ctx);
 
+  // -------- Path A: initialSrc transition (chapter-2 style continuity) --------
+  // Render the previous step's source instantly, then animate per-edit
+  // replacements that mutate it into `def.src`.
+  if (initialSrc && STEPS[initialSrc]) {
+    let working = STEPS[initialSrc].src;
+    codeEl.innerHTML = gutterized(highlight(working));
+    await sleep(800);
+    const edits = (def.editsFrom && def.editsFrom[initialSrc]) || [];
+    for (const ed of edits) {
+      working = await applyEdit(codeEl, working, ed, typeSpeed);
+    }
+    codeEl.innerHTML = gutterized(highlight(def.src));
+    if (noRun) {
+      await sleep(postHold);
+      window.__doneRendering__ = true;
+      return;
+    }
+    await sleep(runDelay);
+    runBtn.classList.add('pressed');
+    toast.classList.add('on');
+    badge.textContent = 'running…';
+    await sleep(350);
+    runBtn.classList.remove('pressed');
+    if (!TURTLE_VISIBLE) { TURTLE_VISIBLE = true; }
+    // Fresh draw: clear canvas and animate the full def.draw().
+    resetWorld(ctx);
+    redrawCanvas(ctx);
+    for (const cmd of def.draw()) {
+      if (cmd[0] === 'forward') await animateForward(ctx, cmd[1]);
+      else if (cmd[0] === 'right') await animateTurn(ctx, cmd[1]);
+      else if (cmd[0] === 'left')  await animateTurn(ctx, -cmd[1]);
+    }
+    toast.classList.remove('on');
+    badge.textContent = 'done!';
+    await sleep(postHold);
+    window.__doneRendering__ = true;
+    return;
+  }
+
+  // -------- Path B: classic preTyped + type-from-empty path --------
   // Compute starting char offset = end of line `preTyped` (1-based).
   const fullSrc = def.src;
   let startOffset = 0;
@@ -852,10 +1056,11 @@ function runInteractive(){
   document.body.classList.add('play');
   const params = new URLSearchParams(location.search);
   const stepParam = params.get('step');
-  const step = parseInt(stepParam || '1', 10);
+  const step = stepParam ? parseKeyParam(stepParam, STEPS) : 1;
   const def = STEPS[step] || STEPS[1];
 
   const editArea = document.getElementById('editArea');
+  const codeHL = document.getElementById('codeHL');
   const runBtn = document.getElementById('runbtn');
   const resetBtn = document.getElementById('resetbtn');
   const toast = document.getElementById('toast');
@@ -863,9 +1068,21 @@ function runInteractive(){
   const errBar = document.getElementById('errorbar');
   const ctx = document.getElementById('cv').getContext('2d');
 
+  // Live syntax-highlight mirror behind the (transparent-text) textarea.
+  function renderHL(){
+    // Trailing newline keeps the last empty line a full line tall.
+    codeHL.innerHTML = highlight(editArea.value) + '\n';
+  }
+  editArea.addEventListener('input', renderHL);
+  editArea.addEventListener('scroll', () => {
+    codeHL.scrollTop = editArea.scrollTop;
+    codeHL.scrollLeft = editArea.scrollLeft;
+  });
+
   // When the user opens the editor with no `step` query param, start with an
   // empty editor (no pre-existing code) so kids can type from scratch.
   editArea.value = stepParam ? def.src : '';
+  renderHL();
   resetWorld(ctx);
   badge.textContent = 'ready — press RUN';
 
@@ -943,6 +1160,7 @@ function runInteractive(){
         editArea.value = v.slice(0, s) + '    ' + v.slice(e);
         editArea.selectionStart = editArea.selectionEnd = s + 4;
       }
+      renderHL();
       return;
     }
     if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
@@ -1095,6 +1313,36 @@ function main(){
   else if (params.get('demo') === 'tryNumbers') runTryNumbers();
   else runAnimation();
 }
+
+// Render initial editor source synchronously so the browser-recorded video
+// shows the editor immediately, not 2-3 seconds of white waiting for fonts.
+// We pre-paint the initial code (initialSrc OR step src minus animations) so
+// the recording opens with content even before document.fonts.ready resolves.
+(function preRender(){
+  try {
+    const params = new URLSearchParams(location.search);
+    const stepRaw = params.get('step') || '1';
+    const step = parseKeyParam(stepRaw, STEPS);
+    const initialSrcRaw = params.get('initialSrc') || '';
+    const initialSrc = parseKeyParam(initialSrcRaw, STEPS);
+    const preTyped = parseInt(params.get('preTyped') || '0', 10);
+    const def = STEPS[step] || STEPS[1];
+    const codeEl = document.getElementById('code');
+    if (!codeEl) return;
+    let src = '';
+    if (initialSrc && STEPS[initialSrc]) {
+      src = STEPS[initialSrc].src;
+    } else if (preTyped > 0 && def && def.src) {
+      const lines = def.src.split('\n');
+      src = lines.slice(0, preTyped).join('\n');
+    } else if (def && def.src) {
+      src = def.src;  // fallback - just show the target so it isn't white
+    }
+    if (src) {
+      codeEl.innerHTML = gutterized(highlight(src));
+    }
+  } catch(_) { /* best-effort prepaint */ }
+})();
 
 document.fonts.ready.then(main);
 </script>
